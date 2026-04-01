@@ -442,8 +442,9 @@ function getFairGrade(cpBest, cpPlayed, isSacrifice, isOpening, cpSecond){
   const isTopTwo = wpLoss < 0.02 && (ep(cpPlayed) >= wpSecond - 0.02);
   if(isSacrifice && isTopTwo) return 'brilliant';
 
-  // 1. Great (only good / narrow move — best move by a margin)
-  if(wpLoss < 0.01 && (cpBest - cpPlayed) > 100) return 'great';
+  // 1. Great: played the best move AND second-best is at least 15cp worse
+  const secondBestGap = cpBest - cpSec;
+  if(wpLoss <= 0.01 && secondBestGap >= 15) return 'great';
 
   // 2. Standard grades based on win probability loss (updated thresholds)
   if(wpLoss <= 0.01)  return 'best';
