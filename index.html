@@ -427,14 +427,23 @@ function ep(cp){ return 1 / (1 + Math.exp(-0.003 * cp)); }
    isSacrifice = bool from detectSacrifice()
    isOpening   = bool, first 10 plies
    ══════════════════════════════════════════════════════════════ */
-function getFairGrade(cpBest, cpPlayed, isSacrifice, isOpening){
+function getFairGrade(cpBest, cpPlayed, isSacrifice, isOpening, cpSecond){
   const wpBest   = ep(cpBest);
   const wpPlayed = ep(cpPlayed);
   const wpLoss   = Math.max(0, wpBest - wpPlayed);
 
-  // 1. Brilliant & Great (context-specific)
-  if(isSacrifice && wpLoss < 0.02) return 'brilliant';
-  if(wpLoss < 0.01 && (cpBest - cpPlayed) > 100) return 'great'; // only good move
+  // cpSecond defaults to cpBest if not provided (single line)
+  const cpSec = (cpSecond !== undefined) ? cpSecond : cpBest;
+  const wpSecond = ep(cpSec);
+
+  // Brilliant: must be a real sacrifice (≥200cp net loss if accepted),
+  // AND must be the best or second-best move (wpLoss < 0.02, i.e. within top-2 engine quality)
+  // AND the played move must not be clearly worse than the 2nd engine line
+  const isTopTwo = wpLoss < 0.02 && (ep(cpPlayed) >= wpSecond - 0.02);
+  if(isSacrifice && isTopTwo) return 'brilliant';
+
+  // 1. Great (only good / narrow move — best move by a margin)
+  if(wpLoss < 0.01 && (cpBest - cpPlayed) > 100) return 'great';
 
   // 2. Standard grades based on win probability loss (updated thresholds)
   if(wpLoss <= 0.01)  return 'best';
@@ -941,7 +950,7 @@ function addFreeMove(result){
       if(idx < 12 && wpLossFree < 0.15 && !bookAlreadyBroken){
         gradeFree = 'book';
       } else {
-        gradeFree = getFairGrade(line1cp, cpPlayed, isSacrifice, idx < 12);
+        gradeFree = getFairGrade(line1cp, cpPlayed, isSacrifice, idx < 12, line2cp);
       }
       history[idx].grade    = gradeFree;
       history[idx].epBefore = epBefore;
@@ -1050,11 +1059,11 @@ function loadGame(sans){
 /* ══════════════════════════════════════════════════════════════
    SACRIFICE DETECTION
    A move is a sacrifice if:
-   1. The piece that moved can be immediately captured by the opponent
-      (i.e. at least one opponent legal move takes that square), AND
-   2. The piece that moved is worth MORE than or equal to what's already
-      on the destination (so giving a rook for a pawn counts, but taking
-      a free piece doesn't).
+   1. The piece that moved can be immediately recaptured by the opponent, AND
+   2. The net material loss (movingVal - capturedVal) is ≥ 200cp (≈ 2 pawns).
+
+   This correctly handles captures too: Qxr where opponent recaptures loses
+   400cp net and qualifies; Qxq loses 0cp net and does not.
 
    Piece values (centipawns): P=100, N=320, B=330, R=500, Q=900, K=0
    ══════════════════════════════════════════════════════════════ */
@@ -1081,14 +1090,18 @@ function detectSacrifice(fenBefore, uci){
 
     // Can the opponent immediately recapture on 'to'?
     const opponentMoves = chess.moves({verbose: true});
-    const canRecapture  = opponentMoves.some(m => m.to === to);
+    const recaptures = opponentMoves.filter(m => m.to === to);
 
-    if(!canRecapture) return false;
+    if(!recaptures.length) return false;
 
-    // It's only a sacrifice if we're giving away more than we're taking
-    // e.g. moving a rook to a square the opponent can take with a pawn = sacrifice
-    // but moving a pawn to a square the opponent can take with a rook = normal loss
-    return movingVal > capturedVal;
+    // Net material loss if opponent recaptures: what we moved minus what we captured.
+    // e.g. Qxr then opponent recaptures → we lose 900-500 = 400cp (sacrifice)
+    //      Qxq then opponent recaptures → we lose 900-900 = 0cp (not a sacrifice)
+    //      Nxp then opponent recaptures → we lose 320-100 = 220cp (sacrifice)
+    const netLoss = movingVal - capturedVal;
+
+    // Require at least 200cp (≈2 pawns) of direct material loss if accepted
+    return netLoss >= 200;
   } catch(e){
     return false;
   }
@@ -1150,7 +1163,7 @@ async function runAnalysis(){
     if(!bookBroken && i < 12 && wpLoss < 0.15){
       grade = 'book';
     } else {
-      grade = getFairGrade(cpBest, cpPlayed, isSacrifice, i < 12);
+      grade = getFairGrade(cpBest, cpPlayed, isSacrifice, i < 12, cpSecond);
       if(i < 12) bookBroken = true;  // non-book move in opening — sequence broken
     }
 
