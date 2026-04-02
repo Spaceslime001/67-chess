@@ -54,6 +54,9 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;di
 .btn-green:hover{background:#8aa660;}
 .btn-blue{background:#4a90e2;color:#fff;border-color:#4a90e2;font-weight:600;}
 .btn-blue:hover{background:#5a9ef0;}
+.btn-arrow{background:transparent;color:var(--dim);border-color:var(--border2);}
+.btn-arrow.on{background:rgba(100,200,100,0.15);color:#6dc87a;border-color:#6dc87a;}
+.btn-arrow:hover{background:var(--panel2);color:var(--text);}
 
 
 
@@ -245,6 +248,7 @@ textarea:focus{border-color:var(--green);}
       <span id="eText">Loading engine…</span>
     </div>
     <span style="display:none" class="mode-badge" id="modeBadge" onclick="toggleMode()">Review Mode</span>
+    <button class="btn btn-arrow" id="bestArrowBtn" onclick="toggleBestArrow()" title="Toggle best move arrow">⬆ Best Move</button>
     <button class="btn" onclick="openModal()">📂 Load PGN</button>
     <button class="btn btn-blue" onclick="newGame()">↺ Reset Board</button>
   </div>
@@ -595,6 +599,8 @@ let lastFreeMove=null;  // {from, to} — for yellow highlight in free play
 
 let analysisRunning=false;
 let sansList=[];
+let showBestArrow=false;  // toggleable best-move arrow overlay
+let bestArrowCache={};    // fen -> {from, to}  to avoid re-querying same position
 
 /* ══════════════════════════════════════════════════════════════
    BOARD SIZING
@@ -721,6 +727,8 @@ function drawBoard(){
 
   updateEvalBar();
   updateBanner();
+  // Draw best-move arrow overlay if toggled on
+  drawBestArrow();
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -986,6 +994,87 @@ function showPromotion(color, from, to, cb){
 }
 
 /* ══════════════════════════════════════════════════════════════
+   BEST MOVE ARROW TOGGLE
+   ══════════════════════════════════════════════════════════════ */
+function toggleBestArrow(){
+  showBestArrow=!showBestArrow;
+  const btn=document.getElementById('bestArrowBtn');
+  btn.classList.toggle('on', showBestArrow);
+  btn.textContent = showBestArrow ? '⬆ Best Move ✓' : '⬆ Best Move';
+  drawBestArrow();
+}
+
+// Draw (or clear) the best-move arrow for the current position
+function drawBestArrow(){
+  const svg=document.getElementById('boardSvg');
+  // Remove any existing best-move arrows (they have data-best attribute)
+  svg.querySelectorAll('[data-best]').forEach(el=>el.remove());
+  if(!showBestArrow) return;
+
+  const currentFen = mode==='free' ? liveGame.fen() : (fens[ply]||fens[0]);
+
+  // Check the review-mode stored best first (instant)
+  if(mode==='review' && ply>0){
+    const h=history[ply-1];
+    // The best move stored is from *before* this move was played —
+    // we want the best move for the *current* position (after the move).
+    // So we fall through to live analysis below.
+  }
+
+  // Use cache if available
+  if(bestArrowCache[currentFen]){
+    const {from,to}=bestArrowCache[currentFen];
+    if(from&&to) drawArrowStyled(svg,from,to,'best-arrow');
+    return;
+  }
+
+  // Live Stockfish query
+  if(!SF||!sfReady) return;
+  sfAnalyse(currentFen, Math.min(DEPTH,14)).then(res=>{
+    const best=res.best;
+    if(!best||best==='(none)') return;
+    const from=best.slice(0,2), to=best.slice(2,4);
+    bestArrowCache[currentFen]={from,to};
+    // Only paint if we're still on the same position
+    const nowFen = mode==='free' ? liveGame.fen() : (fens[ply]||fens[0]);
+    if(nowFen===currentFen && showBestArrow){
+      const svgEl=document.getElementById('boardSvg');
+      svgEl.querySelectorAll('[data-best]').forEach(el=>el.remove());
+      drawArrowStyled(svgEl,from,to,'best-arrow');
+    }
+  });
+}
+
+// Styled arrow with a group element so we can tag + remove it
+function drawArrowStyled(svg, from, to, tag){
+  const f=sqToXY(from), t=sqToXY(to);
+  const dx=t.x-f.x, dy=t.y-f.y;
+  const len=Math.sqrt(dx*dx+dy*dy);
+  if(len===0) return;
+  const ux=dx/len, uy=dy/len;
+  const headLen=0.42;
+  const tx=t.x-ux*headLen, ty=t.y-uy*headLen;
+  const g=document.createElementNS('http://www.w3.org/2000/svg','g');
+  g.setAttribute('data-best', tag);
+  // Shaft
+  const line=document.createElementNS('http://www.w3.org/2000/svg','line');
+  line.setAttribute('x1',f.x); line.setAttribute('y1',f.y);
+  line.setAttribute('x2',tx);  line.setAttribute('y2',ty);
+  line.setAttribute('stroke','rgba(80,180,255,0.82)');
+  line.setAttribute('stroke-width','0.20');
+  line.setAttribute('stroke-linecap','round');
+  g.appendChild(line);
+  // Arrowhead
+  const perp={x:-uy*0.20,y:ux*0.20};
+  const pts=`${tx+perp.x},${ty+perp.y} ${t.x},${t.y} ${tx-perp.x},${ty-perp.y}`;
+  const poly=document.createElementNS('http://www.w3.org/2000/svg','polygon');
+  poly.setAttribute('points',pts);
+  poly.setAttribute('fill','rgba(80,180,255,0.90)');
+  g.appendChild(poly);
+  svg.appendChild(g);
+}
+
+/* ══════════════════════════════════════════════════════════════
    MODE TOGGLE
    ══════════════════════════════════════════════════════════════ */
 function toggleMode(){
@@ -1008,6 +1097,7 @@ function newGame(){
   mode='free';
   liveGame=new Chess();
   history=[]; fens=[liveGame.fen()]; sansList=[];
+  bestArrowCache={};
   ply=0;
   document.getElementById('wname').textContent='White';
   document.getElementById('bname').textContent='Black';
@@ -1037,6 +1127,7 @@ function loadGame(sans){
   const tmp=new Chess();
   history=[];
   fens=[tmp.fen()];
+  bestArrowCache={};
   for(let i=0;i<sans.length;i++){
     const before=tmp.fen();
     const mv=tmp.move(sans[i]);
